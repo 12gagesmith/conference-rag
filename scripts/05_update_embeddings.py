@@ -15,7 +15,7 @@ Input:
 
 Prerequisites:
     - config.public.json with Supabase URL and anon key
-    - config.secret.json with Supabase service key
+    - config.secret.json with Supabase service key, access token, and project ref
     - Database schema created (Step 1)
     - Embeddings generated (Step 4)
 """
@@ -25,6 +25,7 @@ import os
 import sys
 import time
 
+import requests
 from supabase import create_client
 from tqdm import tqdm
 
@@ -69,18 +70,26 @@ def main():
     print("Replacing database contents (truncate + re-import)")
     print("=" * 60)
 
-    try:
-        result = client.table('sentence_embeddings').select('id', count='exact').limit(1).execute()
-        existing_count = result.count or 0
-        if existing_count > 0:
-            print(f"   Truncating {existing_count:,} existing rows...")
-            client.table('sentence_embeddings').delete().neq('id', '00000000-0000-0000-0000-000000000000').execute()
-            print("   ✅ Table truncated.")
-        else:
-            print("   Table is empty — ready for import.")
-    except Exception as e:
-        print(f"   ⚠️ Could not check existing data: {e}")
-        print("   Proceeding with import anyway...")
+    result = client.table('sentence_embeddings').select('id', count='exact').limit(1).execute()
+    existing_count = result.count or 0
+    if existing_count > 0:
+        # TRUNCATE via the Management API (like Step 1). Deleting every row through
+        # PostgREST exceeds Supabase's 8s statement timeout once embeddings are loaded.
+        print(f"   Truncating {existing_count:,} existing rows...")
+        url = f"https://api.supabase.com/v1/projects/{secrets['SUPABASE_PROJECT_REF']}/database/query"
+        headers = {
+            "Authorization": f"Bearer {secrets['SUPABASE_ACCESS_TOKEN']}",
+            "Content-Type": "application/json"
+        }
+        resp = requests.post(url, headers=headers, json={"query": "TRUNCATE sentence_embeddings;"})
+        if resp.status_code not in (200, 201):
+            # Stop here — importing on top of existing rows would create duplicates
+            print(f"❌ Truncate failed: {resp.status_code}")
+            print(resp.text[:500])
+            sys.exit(1)
+        print("   ✅ Table truncated.")
+    else:
+        print("   Table is empty — ready for import.")
 
     # Batch import (much faster than individual updates!)
     print(f"\n   Importing {len(records):,} records in batches of {BATCH_SIZE}...\n")
