@@ -1,9 +1,9 @@
 """
 Step 1: Create Database Schema
 ================================
-Creates the sentence_embeddings table, pgvector extension,
-Row Level Security policies, and the match_sentences() function
-in your Supabase database.
+Creates the sentence_embeddings table, pgvector extension, HNSW
+vector index, Row Level Security policies, and the match_sentences()
+function in your Supabase database.
 
 Usage:
     python scripts/01_create_schema.py
@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS sentence_embeddings (
 -- Create index for talk_id grouping
 CREATE INDEX IF NOT EXISTS sentence_embeddings_talk_id_idx 
 ON sentence_embeddings(talk_id);
+
+-- Create HNSW vector index so match_sentences() doesn't compare against every row
+-- (a full scan exceeds the 8s timeout for signed-in users). vector_cosine_ops
+-- matches the <=> cosine-distance operator used in match_sentences().
+CREATE INDEX IF NOT EXISTS sentence_embeddings_embedding_idx
+ON sentence_embeddings USING hnsw (embedding vector_cosine_ops);
 
 -- Enable Row Level Security
 ALTER TABLE sentence_embeddings ENABLE ROW LEVEL SECURITY;
