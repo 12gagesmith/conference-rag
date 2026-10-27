@@ -419,3 +419,6 @@ enabled = true
 # inside the function instead (see functions/_shared/auth.ts).
 [functions.embed-question]
 verify_jwt = false
+
+[functions.generate-answer]
+verify_jwt = false
