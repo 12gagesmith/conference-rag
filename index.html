@@ -85,6 +85,22 @@
 
         <div class="container">
             <div class="search-panels">
+                <!-- Speaker Filter (applies to all three searches) -->
+                <div class="speaker-filter">
+                    <label for="speaker-input">🎤 Speaker</label>
+                    <div class="speaker-filter-row">
+                        <div class="speaker-combo">
+                            <input type="text" id="speaker-input" placeholder="All speakers (type a name to filter)"
+                                autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false"
+                                aria-controls="speaker-options" disabled />
+                            <ul id="speaker-options" class="speaker-options hidden" role="listbox"></ul>
+                        </div>
+                        <button id="speaker-clear" class="btn-secondary hidden" title="Clear speaker filter"
+                            aria-label="Clear speaker filter">×</button>
+                    </div>
+                    <small id="speaker-hint" class="speaker-hint">Loading speakers...</small>
+                </div>
+
                 <!-- Panel 1: Keyword Search -->
                 <div class="search-panel" id="keyword-panel">
                     <div class="panel-header">

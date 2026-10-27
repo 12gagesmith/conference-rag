@@ -84,6 +84,11 @@ const ragBtn = document.getElementById('rag-btn');
 const ragResults = document.getElementById('rag-results');
 const ragStatus = document.getElementById('rag-status');
 
+const speakerInput = document.getElementById('speaker-input');
+const speakerOptions = document.getElementById('speaker-options');
+const speakerClearBtn = document.getElementById('speaker-clear');
+const speakerHint = document.getElementById('speaker-hint');
+
 // ============================================
 // SETUP BANNER DETECTION
 // ============================================
@@ -286,6 +291,7 @@ function showApp(user) {
     if (userEmailSpan) userEmailSpan.textContent = user.email;
     // Check search readiness when user logs in
     checkSearchReadiness();
+    loadSpeakers();
 }
 
 function showMessage(text, type) {
@@ -404,6 +410,126 @@ function setSearchReady(type, ready) {
 }
 
 // ============================================
+// SPEAKER FILTER
+// ============================================
+// One shared filter for all three searches. Names come from the speaker_name
+// column, which the database cleans up from the raw speaker field
+// ("By President Henry B. Eyring" → "Henry B. Eyring").
+
+let speakers = [];             // [{ name, talks }] from list_speakers()
+let speakersLoading = false;
+let visibleSpeakers = [];      // suggestions currently shown
+let activeOptionIndex = -1;    // suggestion highlighted with the arrow keys
+
+// Lowercase, strip accents, and collapse spaces so "gerald causse" matches "Gérald Caussé"
+function normalizeName(text) {
+    return text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+async function loadSpeakers() {
+    // showApp() can run twice on sign-in (checkSession + onAuthStateChange)
+    if (!supabaseClient || !speakerInput || speakersLoading || speakers.length) return;
+    speakersLoading = true;
+
+    const { data, error } = await supabaseClient.rpc('list_speakers');
+    speakersLoading = false;
+
+    if (error || !data || data.length === 0) {
+        setSpeakerHint('Speaker list unavailable. Searches cover all speakers.', false);
+        return;
+    }
+
+    speakers = data.map(row => ({ name: row.speaker_name, talks: row.talk_count }));
+    speakerInput.disabled = false;
+    updateSpeakerHint();
+}
+
+// What the searches should filter by. speaker = null means all speakers;
+// valid = false means the box holds text that isn't a speaker on the list.
+function getSpeakerFilter() {
+    const text = speakerInput ? normalizeName(speakerInput.value) : '';
+    if (!text) return { valid: true, speaker: null };
+    const match = speakers.find(s => normalizeName(s.name) === text);
+    return match ? { valid: true, speaker: match.name } : { valid: false, speaker: null };
+}
+
+function setSpeakerHint(text, isError) {
+    if (!speakerHint) return;
+    speakerHint.textContent = text;
+    speakerHint.classList.toggle('error', isError);
+}
+
+function updateSpeakerHint() {
+    const filter = getSpeakerFilter();
+    if (speakerClearBtn) speakerClearBtn.classList.toggle('hidden', !speakerInput.value.trim());
+
+    if (!filter.valid) {
+        setSpeakerHint('Pick a speaker from the list, or clear the box to search everyone.', true);
+    } else if (filter.speaker) {
+        setSpeakerHint(`Keyword, semantic, and RAG search will only use talks by ${filter.speaker}.`, false);
+    } else {
+        setSpeakerHint('Searching all speakers.', false);
+    }
+}
+
+function showSpeakerOptions() {
+    if (!speakerOptions || speakerInput.disabled) return;
+    const query = normalizeName(speakerInput.value);
+    visibleSpeakers = speakers.filter(s => normalizeName(s.name).includes(query));
+    activeOptionIndex = -1;
+    speakerInput.removeAttribute('aria-activedescendant');
+
+    speakerOptions.innerHTML = visibleSpeakers.length
+        ? visibleSpeakers.map((s, i) => `<li class="speaker-option" role="option" id="speaker-option-${i}" data-index="${i}">
+                <span>${escapeHtml(s.name)}</span>
+                <span class="speaker-option-count">${s.talks} talk${s.talks === 1 ? '' : 's'}</span>
+            </li>`).join('')
+        : '<li class="speaker-option-empty">No speaker matches</li>';
+    speakerOptions.classList.remove('hidden');
+    speakerInput.setAttribute('aria-expanded', 'true');
+}
+
+function hideSpeakerOptions() {
+    if (!speakerOptions) return;
+    speakerOptions.classList.add('hidden');
+    speakerInput.setAttribute('aria-expanded', 'false');
+    speakerInput.removeAttribute('aria-activedescendant');
+    activeOptionIndex = -1;
+}
+
+function selectSpeaker(speaker) {
+    speakerInput.value = speaker.name;
+    hideSpeakerOptions();
+    updateSpeakerHint();
+}
+
+// Arrow keys move the highlight through the suggestions, wrapping at either end
+function moveActiveOption(step) {
+    if (!visibleSpeakers.length) return;
+    if (activeOptionIndex < 0) {
+        activeOptionIndex = step > 0 ? 0 : visibleSpeakers.length - 1;
+    } else {
+        activeOptionIndex = (activeOptionIndex + step + visibleSpeakers.length) % visibleSpeakers.length;
+    }
+
+    speakerOptions.querySelectorAll('.speaker-option').forEach((el, i) => {
+        el.classList.toggle('active', i === activeOptionIndex);
+    });
+    const activeEl = document.getElementById(`speaker-option-${activeOptionIndex}`);
+    speakerInput.setAttribute('aria-activedescendant', activeEl.id);
+    activeEl.scrollIntoView({ block: 'nearest' });
+}
+
+// Shown above results so a filtered search isn't mistaken for an unfiltered one
+function speakerNote(speaker) {
+    return speaker ? `<div class="filter-note">Only talks by <strong>${escapeHtml(speaker)}</strong></div>` : '';
+}
+
+function showSpeakerFilterError(type) {
+    showResults(type, '<div class="result-error">Pick a speaker from the list, or clear the Speaker box to search everyone.</div>');
+}
+
+// ============================================
 // KEYWORD SEARCH
 // ============================================
 
@@ -411,21 +537,27 @@ async function keywordSearch() {
     const query = keywordInput ? keywordInput.value.trim() : '';
     if (!query || !supabaseClient) return;
 
+    const filter = getSpeakerFilter();
+    if (!filter.valid) return showSpeakerFilterError('keyword');
+
     showLoading(true);
     clearResults('keyword');
 
     try {
         // Search sentence_embeddings that contain the keyword (case-insensitive)
-        const { data, error } = await supabaseClient
+        let request = supabaseClient
             .from('sentence_embeddings')
             .select('text, talk_id, title, speaker, url')
-            .ilike('text', `%${query}%`)
-            .limit(20);
+            .ilike('text', `%${query}%`);
+        if (filter.speaker) request = request.eq('speaker_name', filter.speaker);
+
+        const { data, error } = await request.limit(20);
 
         if (error) throw new Error(`Search failed: ${error.message}`);
 
         if (!data || data.length === 0) {
-            showResults('keyword', '<div class="no-results">No results found. Try different keywords.</div>');
+            const scope = filter.speaker ? ` in talks by ${escapeHtml(filter.speaker)}` : '';
+            showResults('keyword', `<div class="no-results">No results found${scope}. Try different keywords.</div>`);
             return;
         }
 
@@ -444,7 +576,7 @@ async function keywordSearch() {
             talks[talkId].sentences.push(highlightKeyword(row.text, query));
         }
 
-        let html = '';
+        let html = speakerNote(filter.speaker);
         for (const talk of Object.values(talks)) {
             html += `<div class="result-card">
                 <div class="result-title"><a href="${escapeHtml(talk.url)}" target="_blank" class="result-title-link">${escapeHtml(talk.title)}</a></div>
@@ -475,6 +607,9 @@ async function semanticSearch() {
     const query = semanticInput ? semanticInput.value.trim() : '';
     if (!query || !supabaseClient) return;
 
+    const filter = getSpeakerFilter();
+    if (!filter.valid) return showSpeakerFilterError('semantic');
+
     showLoading(true);
     clearResults('semantic');
 
@@ -483,7 +618,7 @@ async function semanticSearch() {
         const embedding = await getEmbedding(query);
 
         // Step 2: Search for similar sentences
-        const results = await searchSentences(embedding);
+        const results = await searchSentences(embedding, filter.speaker);
 
         if (!results || results.length === 0) {
             showResults('semantic', '<div class="no-results">No similar content found. Try a different query.</div>');
@@ -491,7 +626,7 @@ async function semanticSearch() {
         }
 
         // Step 3: Display results with similarity badges
-        let html = '';
+        let html = speakerNote(filter.speaker);
         for (const result of results) {
             const sim = result.similarity;
             const badge = similarityBadge(sim);
@@ -523,6 +658,9 @@ async function askQuestion() {
     const question = ragInput ? ragInput.value.trim() : '';
     if (!question || !supabaseClient) return;
 
+    const filter = getSpeakerFilter();
+    if (!filter.valid) return showSpeakerFilterError('rag');
+
     showLoading(true);
     clearResults('rag');
 
@@ -530,8 +668,13 @@ async function askQuestion() {
         // Step 1: Get embedding
         const embedding = await getEmbedding(question);
 
-        // Step 2: Search for similar sentences
-        const results = await searchSentences(embedding);
+        // Step 2: Search for similar sentences (only from the chosen speaker, if any)
+        const results = await searchSentences(embedding, filter.speaker);
+
+        if (!results || results.length === 0) {
+            showResults('rag', '<div class="no-results">No related talks found. Try a different question.</div>');
+            return;
+        }
 
         // Step 3: Group by talk (with similarity scores and URLs)
         const topTalks = groupByTalk(results);
@@ -548,7 +691,7 @@ async function askQuestion() {
         const simClass = overallSimilarity >= 0.70 ? 'similarity-high'
             : overallSimilarity >= 0.40 ? 'similarity-mid' : 'similarity-low';
 
-        let html = `<div class="result-card rag-answer rag-${simClass}">
+        let html = `${speakerNote(filter.speaker)}<div class="result-card rag-answer rag-${simClass}">
             <div class="result-card-header">
                 <div class="result-title">AI Answer</div>
                 ${overallBadge}
@@ -596,13 +739,14 @@ async function getEmbedding(text) {
     return data.embedding;
 }
 
-// Search sentences using vector similarity
-async function searchSentences(embedding) {
+// Search sentences using vector similarity (speaker = null searches all speakers)
+async function searchSentences(embedding, speaker = null) {
     if (!supabaseClient) throw new Error('Supabase not configured');
 
     const { data, error } = await supabaseClient.rpc('match_sentences', {
         query_embedding: embedding,
-        match_count: 20
+        match_count: 20,
+        filter_speaker: speaker
     });
 
     if (error) throw new Error(`Database search failed: ${error.message}`);
@@ -751,6 +895,49 @@ if (ragBtn) ragBtn.addEventListener('click', askQuestion);
 if (ragInput) ragInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') askQuestion();
 });
+
+// Speaker filter
+if (speakerInput) {
+    speakerInput.addEventListener('focus', showSpeakerOptions);
+    speakerInput.addEventListener('blur', hideSpeakerOptions);
+    speakerInput.addEventListener('input', () => {
+        showSpeakerOptions();
+        updateSpeakerHint();
+    });
+    speakerInput.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (speakerOptions.classList.contains('hidden')) showSpeakerOptions();
+            moveActiveOption(e.key === 'ArrowDown' ? 1 : -1);
+        } else if (e.key === 'Enter' && !speakerOptions.classList.contains('hidden')) {
+            // Enter picks the highlighted suggestion, or the only one left
+            const choice = activeOptionIndex >= 0 ? visibleSpeakers[activeOptionIndex]
+                : visibleSpeakers.length === 1 ? visibleSpeakers[0] : null;
+            if (choice) {
+                e.preventDefault();
+                selectSpeaker(choice);
+            }
+        } else if (e.key === 'Escape') {
+            hideSpeakerOptions();
+        }
+    });
+}
+if (speakerOptions) {
+    // mousedown (not click) so the choice lands before the input's blur hides the list
+    speakerOptions.addEventListener('mousedown', (e) => {
+        const option = e.target.closest('.speaker-option');
+        if (!option) return;
+        e.preventDefault();
+        selectSpeaker(visibleSpeakers[Number(option.dataset.index)]);
+    });
+}
+if (speakerClearBtn) {
+    speakerClearBtn.addEventListener('click', () => {
+        speakerInput.value = '';
+        updateSpeakerHint();
+        speakerInput.focus();
+    });
+}
 
 // ============================================
 // DEPLOY TIMESTAMP

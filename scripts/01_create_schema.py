@@ -1,9 +1,10 @@
 """
 Step 1: Create Database Schema
 ================================
-Creates the sentence_embeddings table, pgvector extension, HNSW
-vector index, Row Level Security policies, and the match_sentences()
-function in your Supabase database.
+Creates the sentence_embeddings table (with a cleaned-up speaker_name
+column), pgvector extension, HNSW vector index, Row Level Security
+policies, and the match_sentences() and list_speakers() functions
+in your Supabase database.
 
 Usage:
     python scripts/01_create_schema.py
@@ -68,6 +69,22 @@ ON sentence_embeddings(talk_id);
 CREATE INDEX IF NOT EXISTS sentence_embeddings_embedding_idx
 ON sentence_embeddings USING hnsw (embedding vector_cosine_ops);
 
+-- Clean speaker names for the speaker filter. The scraped speaker field varies for the
+-- same person ("By President Henry B. Eyring", "Presented by Elder Henry B. Eyring"),
+-- so drop the "By"/"Presented by" prefix and title, and normalize spaces.
+-- A generated column fills itself in on every insert, so the import scripts don't change.
+ALTER TABLE sentence_embeddings
+ADD COLUMN IF NOT EXISTS speaker_name TEXT GENERATED ALWAYS AS (
+    trim(regexp_replace(regexp_replace(regexp_replace(
+        replace(speaker, chr(160), ' '),                                   -- non-breaking spaces
+        '^(presented )?by[[:space:]]+', '', 'i'),                          -- "By " / "Presented by "
+        '^(president|elder|sister|brother|bishop)[[:space:]]+', '', 'i'),  -- title
+        '[[:space:]]+', ' ', 'g'))
+) STORED;
+
+CREATE INDEX IF NOT EXISTS sentence_embeddings_speaker_name_idx
+ON sentence_embeddings(speaker_name);
+
 -- Enable Row Level Security
 ALTER TABLE sentence_embeddings ENABLE ROW LEVEL SECURITY;
 
@@ -107,31 +124,63 @@ ON page_views FOR SELECT
 TO anon, authenticated
 USING (true);
 
--- Create function for similarity search
+-- Create function for similarity search, optionally limited to one speaker
+-- (filter_speaker matches speaker_name). Drop the older two-argument version first:
+-- it didn't return url, and its return type can't be changed in place.
+DROP FUNCTION IF EXISTS match_sentences(vector, integer);
+
 CREATE OR REPLACE FUNCTION match_sentences(
   query_embedding vector(1536),
-  match_count int DEFAULT 20
+  match_count int DEFAULT 20,
+  filter_speaker text DEFAULT NULL
 )
 RETURNS TABLE (
   id uuid,
   talk_id uuid,
   title text,
   speaker text,
+  url text,
   text text,
   similarity float
 )
+LANGUAGE plpgsql STABLE
+AS $$
+BEGIN
+  IF filter_speaker IS NULL THEN
+    -- All speakers: the HNSW index finds the closest sentences quickly
+    RETURN QUERY
+    SELECT se.id, se.talk_id, se.title, se.speaker, se.url, se.text,
+           1 - (se.embedding <=> query_embedding) AS similarity
+    FROM sentence_embeddings se
+    ORDER BY se.embedding <=> query_embedding
+    LIMIT match_count;
+  ELSE
+    -- One speaker: compare against all of their sentences (at most ~1,600) for exact
+    -- results. Sorting by similarity instead of distance keeps the planner off the HNSW
+    -- index, which only returns ~40 candidates before the speaker filter is applied.
+    RETURN QUERY
+    SELECT se.id, se.talk_id, se.title, se.speaker, se.url, se.text,
+           1 - (se.embedding <=> query_embedding) AS similarity
+    FROM sentence_embeddings se
+    WHERE se.speaker_name = filter_speaker
+    ORDER BY 1 - (se.embedding <=> query_embedding) DESC
+    LIMIT match_count;
+  END IF;
+END;
+$$;
+
+-- Speaker names with talk counts, for the speaker filter's suggestions
+CREATE OR REPLACE FUNCTION list_speakers()
+RETURNS TABLE (
+  speaker_name text,
+  talk_count bigint
+)
 LANGUAGE sql STABLE
 AS $$
-  SELECT
-    sentence_embeddings.id,
-    sentence_embeddings.talk_id,
-    sentence_embeddings.title,
-    sentence_embeddings.speaker,
-    sentence_embeddings.text,
-    1 - (sentence_embeddings.embedding <=> query_embedding) as similarity
-  FROM sentence_embeddings
-  ORDER BY sentence_embeddings.embedding <=> query_embedding
-  LIMIT match_count;
+  SELECT se.speaker_name, count(DISTINCT se.talk_id)
+  FROM sentence_embeddings se
+  GROUP BY se.speaker_name
+  ORDER BY se.speaker_name;
 $$;
 """
 

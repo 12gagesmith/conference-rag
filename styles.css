@@ -532,6 +532,97 @@ input:focus {
     cursor: not-allowed;
 }
 
+/* Speaker Filter (shared by all three searches) */
+.speaker-filter {
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-md) var(--spacing-lg);
+    border: 2px solid var(--surface-light);
+}
+
+.speaker-filter label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: var(--spacing-xs);
+}
+
+.speaker-filter-row {
+    display: flex;
+    gap: var(--spacing-sm);
+}
+
+.speaker-combo {
+    position: relative;
+    flex: 1;
+}
+
+.speaker-combo input:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.speaker-options {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 20;
+    max-height: 280px;
+    overflow-y: auto;
+    list-style: none;
+    padding: 4px 0;
+    background: var(--surface);
+    border: 1px solid var(--surface-light);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-xl);
+}
+
+.speaker-option {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    padding: 0.5rem var(--spacing-sm);
+    cursor: pointer;
+}
+
+.speaker-option:hover,
+.speaker-option.active {
+    background: var(--surface-light);
+}
+
+.speaker-option-count {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.speaker-option-empty {
+    padding: 0.5rem var(--spacing-sm);
+    color: var(--text-muted);
+}
+
+.speaker-hint {
+    display: block;
+    margin-top: var(--spacing-xs);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.speaker-hint.error {
+    color: var(--error);
+}
+
+/* Shown above results when a speaker filter was applied */
+.filter-note {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-bottom: var(--spacing-sm);
+}
+
+.filter-note strong {
+    color: var(--primary);
+}
+
 /* Search Results */
 .search-results {
     min-height: 0;
